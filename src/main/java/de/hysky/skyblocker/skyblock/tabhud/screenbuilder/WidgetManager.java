@@ -41,6 +41,7 @@ import net.minecraft.util.StringRepresentable;
 import de.hysky.skyblocker.SkyblockerMod;
 import de.hysky.skyblocker.annotations.Init;
 import de.hysky.skyblocker.config.SkyblockerConfigManager;
+import de.hysky.skyblocker.config.backup.ConfigBackupManager;
 import de.hysky.skyblocker.config.datafixer.ConfigDataFixer;
 import de.hysky.skyblocker.skyblock.foraging.galatea.SweepDetailsHudWidget;
 import de.hysky.skyblocker.skyblock.tabhud.TabHud;
@@ -66,7 +67,7 @@ public class WidgetManager {
 
 	private static final int DEFAULTS_VERSION = 1;
 	private static final String DEFAULTS_VERSION_KEY = "_defaults_version";
-	private static final Path FILE = SkyblockerMod.CONFIG_DIR.resolve("hud_widgets.json");
+	public static final Path FILE = SkyblockerMod.CONFIG_DIR.resolve("hud_widgets.json");
 
 	public static final ScreenBuilder SCREEN_BUILDER = new ScreenBuilder();
 
@@ -193,10 +194,17 @@ public class WidgetManager {
 		AtomicReference<@Nullable String> error = new AtomicReference<>();
 		try (BufferedReader reader = Files.newBufferedReader(FILE)) {
 			JsonElement input = JsonParser.parseReader(reader);
+			int prevVersion = input.getAsJsonObject().has("version") ? input.getAsJsonObject().get("version").getAsInt() : 1;
+
 			CONFIG = Config.DATA_FIXING_CODEC.decode(JsonOps.INSTANCE, input).resultOrPartial(error::set).orElseThrow().getFirst();
 			if (error.get() != null) { // separate it to not run when the config fully cannot load
-				LOGGER.error("[Skyblocker] Failed to load part of the HUD config", new Exception(error.get()));
+				LOGGER.error("[Skyblocker] Failed to load part of the HUD config", new RuntimeException(error.get()));
 				showErrorToast();
+				ConfigBackupManager.backupConfig(ConfigBackupManager.ConfigType.HUD_WIDGETS);
+			}
+			// Backup if version is different
+			if (CONFIG.version != prevVersion) {
+				ConfigBackupManager.backupConfig(ConfigBackupManager.ConfigType.HUD_WIDGETS);
 			}
 			// Do not fill defaults if migrating from old config
 			if (CONFIG.defaultsVersion > 0) {
@@ -222,6 +230,7 @@ public class WidgetManager {
 		} catch (Exception e) {
 			LOGGER.error("[Skyblocker] Failed to HUD load config: {}", error.get(), e);
 			showErrorToast();
+			ConfigBackupManager.backupConfig(ConfigBackupManager.ConfigType.HUD_WIDGETS);
 		}
 	}
 
@@ -241,8 +250,8 @@ public class WidgetManager {
 			HudWidget commissions = getWidgetOrPlaceholder("commissions");
 			HudWidget powders = getWidgetOrPlaceholder("powders");
 			EnumSet<Location> miningLocations = EnumSet.of(Location.CRYSTAL_HOLLOWS, Location.DWARVEN_MINES, Location.GLACITE_MINESHAFTS);
-			getCopyTracker().hud().getOrCreate(commissions.getInternalID()).track(miningLocations);
-			getCopyTracker().hud().getOrCreate(powders.getInternalID()).track(miningLocations);
+			getCopyTracker().hud().getOrCreate(commissions.getInternalID()).group(miningLocations);
+			getCopyTracker().hud().getOrCreate(powders.getInternalID()).group(miningLocations);
 
 			PositionRule commsRule = new PositionRule(
 					Optional.empty(),
@@ -288,7 +297,7 @@ public class WidgetManager {
 				hud.add(sweepDetails);
 				hud.serializeConfig();
 			}
-			getCopyTracker().hud().getOrCreate(sweepDetails.getInternalID()).track(SweepDetailsHudWidget.LOCATIONS);
+			getCopyTracker().hud().getOrCreate(sweepDetails.getInternalID()).group(SweepDetailsHudWidget.LOCATIONS);
 
 			// Galatea
 			editableScreenBuilder.setConfig(getScreenConfig(Location.GALATEA));
@@ -371,16 +380,17 @@ public class WidgetManager {
 		}
 	}
 
-	public record Config(Map<Location, ScreenConfig> screenConfigs, CopyTracker copyTracker, int defaultsVersion) {
+	public record Config(Map<Location, ScreenConfig> screenConfigs, CopyTracker copyTracker, int version, int defaultsVersion) {
 		public static final Codec<Config> CODEC = RecordCodecBuilder.create(instance -> instance.group(
 				CodecUtils.mutableOptional(Codec.unboundedMap(Location.CODEC, ScreenConfig.CODEC).fieldOf("configs"), Object2ObjectOpenHashMap::new).forGetter(Config::screenConfigs),
 				CopyTracker.CODEC.fieldOf("copies").forGetter(Config::copyTracker),
+				Codec.INT.fieldOf("version").forGetter(Config::version),
 				Codec.INT.optionalFieldOf(DEFAULTS_VERSION_KEY, 0).forGetter(_ -> DEFAULTS_VERSION)
 		).apply(instance, Config::new));
 		public static final Codec<Config> DATA_FIXING_CODEC = ConfigDataFixer.createDataFixingCodec(ConfigDataFixer.HUD_WIDGETS_TYPE, CODEC);
 
 		public Config() {
-			this(new Object2ObjectOpenHashMap<>(), new CopyTracker(), 0);
+			this(new Object2ObjectOpenHashMap<>(), new CopyTracker(), 0, 0);
 		}
 	}
 }
